@@ -1,0 +1,112 @@
+/*
+ * Nightcord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+import { UserAreaButton } from "@api/UserArea";
+import definePlugin from "@utils/types";
+import { findByPropsLazy } from "@webpack";
+import { FluxDispatcher, React, SelectedChannelStore, UserStore } from "@webpack/common";
+
+// Simple translation helper (autoTranslateNightcord does not exist in Equicord)
+const t = (str: string) => str;
+
+// Webpack modules
+const ChannelActions = findByPropsLazy("selectVoiceChannel");
+
+// Delay (ms) before rejoining. 0 = as fast as possible (next tick, after the current dispatch ends).
+// If rejoining sometimes fails right after a disconnect, try 50-100.
+const REJOIN_DELAY_MS = 0;
+
+let enabled = false;
+let targetChannelId: string | null = null;
+let rejoinPending = false;
+
+function onVoiceStateUpdate({ voiceStates }: { voiceStates: any[]; }) {
+    if (!enabled || !targetChannelId) return;
+
+    const currentUser = UserStore.getCurrentUser();
+    if (!currentUser) return;
+    const myId = currentUser.id;
+
+    // Check if my own state changed in this update
+    const myState = voiceStates.find(s => s.userId === myId);
+
+    // If there is an update about me
+    if (myState) {
+        // If the new channelId differs from the protected one (or null when disconnected)
+        if (myState.channelId !== targetChannelId && !rejoinPending) {
+            rejoinPending = true;
+            setTimeout(() => {
+                rejoinPending = false;
+                if (enabled && targetChannelId) {
+                    try {
+                        ChannelActions?.selectVoiceChannel?.(targetChannelId);
+                    } catch { }
+                }
+            }, REJOIN_DELAY_MS);
+        }
+    }
+}
+
+function AntiMoveDecoIcon({ enabled }: { enabled: boolean; }) {
+    const color = enabled ? "#39FF14" : "currentColor"; // Neon green when enabled
+    return (
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="2.5" />
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" stroke={color} strokeWidth="2.5" />
+        </svg>
+    );
+}
+
+function AntiMoveDecoButton() {
+    const [, forceUpdate] = React.useReducer((x: number) => x + 1, 0);
+
+    const toggle = () => {
+        if (!enabled) {
+            const channelId = SelectedChannelStore?.getVoiceChannelId?.();
+            if (!channelId) {
+                // Not in a voice channel, cannot enable
+                return;
+            }
+            targetChannelId = channelId;
+            enabled = true;
+        } else {
+            enabled = false;
+            targetChannelId = null;
+        }
+        forceUpdate();
+    };
+
+    return (
+        <UserAreaButton
+            onClick={toggle}
+            tooltipText={enabled ? t("Disable AntiMove&Deco") : t("Enable AntiMove&Deco")}
+            icon={<AntiMoveDecoIcon enabled={enabled} />}
+        />
+    );
+}
+
+export default definePlugin({
+    name: "AntiMoveDeco",
+    enabledByDefault: true,
+    description: "Adds a button to prevent being moved or disconnected from a voice channel.",
+    authors: [{ name: "Nightcord", id: 0n }],
+    dependencies: ["UserAreaAPI"],
+
+    userAreaButton: {
+        icon: () => <AntiMoveDecoIcon enabled={enabled} />,
+        render: AntiMoveDecoButton
+    },
+
+    start() {
+        FluxDispatcher.subscribe("VOICE_STATE_UPDATES", onVoiceStateUpdate);
+    },
+    stop() {
+        FluxDispatcher.unsubscribe("VOICE_STATE_UPDATES", onVoiceStateUpdate);
+        enabled = false;
+        targetChannelId = null;
+        rejoinPending = false;
+    }
+});
